@@ -1,4 +1,4 @@
-package Reika.FCompile;
+package Reika.FCompile.Compile;
 
 import java.io.File;
 import java.io.IOException;

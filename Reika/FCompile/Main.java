@@ -7,6 +7,9 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 
+import Reika.FCompile.Compile.FileSwap;
+import Reika.FCompile.Compile.InfoJsonParser;
+import Reika.FCompile.Compile.ModCompile;
 import Reika.FCompile.util.FileIO;
 
 public class Main {
@@ -28,6 +31,7 @@ public class Main {
 		if (!modDir.exists())
 			throw new IllegalArgumentException("Specified mod directory does not exist!");
 		File log = prepareLogger(logFile);
+		ArrayList<FileSwap> swaps = loadSwaps(settings);
 		File[] files = modDir.listFiles();
 		ArrayList<ModCompile> mods = new ArrayList();
 		String author = settings.getSetting("target_author");
@@ -58,7 +62,7 @@ public class Main {
 			try {
 				long time = System.currentTimeMillis();
 				log("Compiling '" + mod.info.getName() + "' v" + mod.info.getVersion() + "...");
-				mod.compile(output);
+				mod.compile(output, swaps);
 				log("Compiled '" + mod.info.getName() + "' in " + (System.currentTimeMillis() - time) + " ms.");
 				compiled++;
 			}
@@ -81,9 +85,22 @@ public class Main {
 		System.out.println("Terminating.");
 	}
 
+	private static ArrayList<FileSwap> loadSwaps(Settings s) {
+		String line = s.getSetting("swap_ins");
+		String[] parts = line.split(",");
+		ArrayList<FileSwap> li = new ArrayList();
+		for (String sg : parts) {
+			FileSwap f = FileSwap.parse(sg);
+			li.add(f);
+		}
+		return li;
+	}
+
 	private static void flushLogger(File log) throws IOException {
+		if (logger.isEmpty())
+			return;
 		try {
-			FileIO.writeLinesToFile(log, logger);
+			FileIO.writeLinesToFile(log, logger, true);
 			logger.clear();
 		}
 		catch (IOException e) {
@@ -102,7 +119,7 @@ public class Main {
 		return log;
 	}
 
-	static void log(String s) {
+	public static void log(String s) {
 		System.out.println(s);
 		logger.add(getTimestamp() + s);
 	}

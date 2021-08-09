@@ -1,4 +1,4 @@
-package Reika.FCompile;
+package Reika.FCompile.Compile;
 
 public class ModVersion implements Comparable<ModVersion> {
 

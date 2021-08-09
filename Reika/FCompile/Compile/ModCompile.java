@@ -1,4 +1,4 @@
-package Reika.FCompile;
+package Reika.FCompile.Compile;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -11,6 +11,8 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashSet;
 
+import Reika.FCompile.Main;
+import Reika.FCompile.Settings;
 import Reika.FCompile.util.FileIO;
 
 public class ModCompile {
@@ -61,14 +63,14 @@ public class ModCompile {
 		}
 	}
 
-	public void compile(File output) throws IOException {
+	public void compile(File output, ArrayList<FileSwap> swaps) throws IOException {
 		ModVersion override = this.getVersionOverride();
 		//File workingDir = new File(new File(output, info.getName()), WORKING_DIRECTORY);
 		String folderName = override == null ? modFolder.getName() : this.calcFolderName(override);
 		File workingDir = new File(output, folderName);
 		workingDir.mkdir();
 		for (File f : modFolder.listFiles()) {
-			this.handleFileInFolder(f, workingDir, override);
+			this.handleFileInFolder(f, workingDir, override, swaps);
 		}
 		File zip = new File(output, folderName + ".zip");
 		if (zip.exists()) {
@@ -94,21 +96,21 @@ public class ModCompile {
 		return pre + "_" + override.toString();
 	}
 
-	private void handleFileInFolder(File f, File workingDir, ModVersion override) throws IOException {
+	private void handleFileInFolder(File f, File workingDir, ModVersion override, ArrayList<FileSwap> swaps) throws IOException {
 		String n = f.getName();
 		//if (n.equals(WORKING_DIRECTORY))
 		//	return;
 		/*
 		if (n.contains(".git"))
 			return;
-			*/
+		 */
 		for (String s : ignoredStrings) {
 			if (n.contains(s))
 				return;
 		}
 		if (f.isDirectory()) {
 			for (File f2 : f.listFiles()) {
-				this.handleFileInFolder(f2, workingDir, override);
+				this.handleFileInFolder(f2, workingDir, override, swaps);
 			}
 		}
 		else {
@@ -117,6 +119,13 @@ public class ModCompile {
 			if (logPerFile)
 				Main.log("Parsing file: " + fr + "; ignored: " + ignore);
 			if (!ignore) {
+				for (FileSwap s : swaps) {
+					if (s.matchFile(this, f)) {
+						File repl = s.getSwap();
+						Main.log("Swapping file '"+f+"' with '"+repl+"'");
+						f = repl;
+					}
+				}
 				File f2 = new File(workingDir, fr.relativePath);
 				f2.getParentFile().mkdirs();
 				f2.createNewFile();
@@ -172,7 +181,7 @@ public class ModCompile {
 			return true;
 		if (n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png") || n.endsWith(".bmp") || n.endsWith(".gif"))
 			return !f.relativePath.startsWith("/graphics");
-		*/
+		 */
 		if (f.isRootFolder() && n.equalsIgnoreCase("thumbnail.png"))
 			return false;
 		String ext = f.getExtension();

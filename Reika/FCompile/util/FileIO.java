@@ -5,6 +5,7 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -94,7 +95,7 @@ public class FileIO {
 
 		}
 		catch (SocketTimeoutException e) { // Slow internet, cannot load a text
-											// file...
+			// file...
 			e.printStackTrace();
 		}
 		catch (Exception e) {
@@ -120,15 +121,15 @@ public class FileIO {
 		folder.delete();
 	}
 
-	public static void writeLinesToFile(String s, ArrayList<String> li) throws IOException {
-		writeLinesToFile(new File(s), li);
+	public static void writeLinesToFile(String s, ArrayList<String> li, boolean keepContents) throws IOException {
+		writeLinesToFile(new File(s), li, keepContents);
 	}
 
-	public static void writeLinesToFile(File f, ArrayList<String> li) throws IOException {
-		writeLinesToFile(new BufferedWriter(new PrintWriter(f)), li);
+	public static void writeLinesToFile(File f, ArrayList<String> li, boolean keepContents) throws IOException {
+		writeLinesToFile(new BufferedWriter(new PrintWriter(new FileWriter(f, keepContents))), li, keepContents);
 	}
 
-	public static void writeLinesToFile(BufferedWriter p, ArrayList<String> li) throws IOException {
+	public static void writeLinesToFile(BufferedWriter p, ArrayList<String> li, boolean keepContents) throws IOException {
 		String sep = System.getProperty("line.separator");
 		for (String s : li) {
 			p.write(s + sep);
