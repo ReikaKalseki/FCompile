@@ -11,6 +11,22 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashSet;
 
+import org.apache.commons.io.FileUtils;
+import org.apache.hc.client5.http.classic.HttpClient;
+import org.apache.hc.client5.http.classic.methods.HttpPost;
+import org.apache.hc.client5.http.entity.mime.FileBody;
+import org.apache.hc.client5.http.entity.mime.HttpMultipartMode;
+import org.apache.hc.client5.http.entity.mime.MultipartEntityBuilder;
+import org.apache.hc.client5.http.entity.mime.StringBody;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.core5.http.ContentType;
+import org.apache.hc.core5.http.HttpEntity;
+import org.apache.hc.core5.http.io.entity.EntityUtils;
+
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
 import Reika.FCompile.Main;
 import Reika.FCompile.Settings;
 import Reika.FCompile.util.FileIO;
@@ -31,6 +47,10 @@ public class ModCompile {
 	private final ArrayList<String> imageFilter = new ArrayList();
 	private final ArrayList<String> soundFilter = new ArrayList();
 
+	private File outputFile;
+	private long lastModified;
+	private long lastSize;
+
 	public ModCompile(File f, InfoJsonParser p, Settings s) {
 		modFolder = f;
 		info = p;
@@ -39,6 +59,18 @@ public class ModCompile {
 		logPerFile = settings.getBooleanSetting("log_per_file");
 
 		this.loadFilters();
+	}
+
+	public void setOutput(File out) {
+		ModVersion override = this.getVersionOverride();
+		String folderName = override == null ? modFolder.getName() : this.calcFolderName(override);
+		outputFile = new File(out, folderName + ".zip");
+		lastModified = outputFile.exists() ? outputFile.lastModified() : -1;
+		lastSize = outputFile.exists() ? outputFile.length() : 0;
+	}
+
+	public boolean isTooNew(int thresh, long time) {
+		return (time-lastModified) <= thresh*1000;
 	}
 
 	private void loadFilters() {
@@ -63,23 +95,67 @@ public class ModCompile {
 		}
 	}
 
-	public void compile(File output, ArrayList<FileSwap> swaps) throws IOException {
-		ModVersion override = this.getVersionOverride();
+	public void compile(ArrayList<FileSwap> swaps) throws IOException {
 		//File workingDir = new File(new File(output, info.getName()), WORKING_DIRECTORY);
-		String folderName = override == null ? modFolder.getName() : this.calcFolderName(override);
-		File workingDir = new File(output, folderName);
+		File workingDir = new File(outputFile.getParentFile(), outputFile.getName().substring(0, outputFile.getName().length()-4));
 		workingDir.mkdir();
+		ModVersion override = this.getVersionOverride();
 		for (File f : modFolder.listFiles()) {
 			this.handleFileInFolder(f, workingDir, override, swaps);
 		}
-		File zip = new File(output, folderName + ".zip");
-		if (zip.exists()) {
-			FileIO.deleteDirectoryWithContents(workingDir);
+		outputFile.delete();
+		if (outputFile.exists()) {
+			FileUtils.deleteDirectory(workingDir);
 			throw new RuntimeException("Cannot compile " + info.getName() + "; output file already exists!");
 		}
 		//ZipHelper.zipFolder(workingDir.getAbsolutePath(), zip.getAbsolutePath());
-		FileIO.zipFolder(workingDir.getAbsolutePath(), zip.getAbsolutePath());
-		FileIO.deleteDirectoryWithContents(workingDir);
+		FileIO.zipFolder(workingDir.getAbsolutePath(), outputFile.getAbsolutePath());
+		FileUtils.deleteDirectory(workingDir);
+	}
+
+	public void upload(String apiKey) throws Exception {
+		HttpClient client = HttpClients.createDefault();
+		String url = "https://mods.factorio.com/api/v2/mods/releases/init_upload";
+		//HttpsURLConnection c = (HttpsURLConnection)new URL(url).openConnection();
+		//c.setRequestMethod("POST");
+		HttpPost post = new HttpPost(url);
+		post.addHeader("Authorization", "Bearer "+apiKey);
+		MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+		builder.setMode(HttpMultipartMode.EXTENDED);
+		StringBody modname = new StringBody(info.getName(), ContentType.MULTIPART_FORM_DATA);
+		builder.addPart("mod", modname);
+		HttpEntity entity = builder.build();
+		post.setEntity(entity);
+		CloseableHttpResponse response = (CloseableHttpResponse)client.execute(post);
+		int code = response.getCode();
+		if (code == 404) {
+			Main.log("Could not find mod portal entry for '"+info.getName()+"'; is the mod not released?", true);
+			return;
+		}
+		if (code != 200)
+			throw new RuntimeException("Received error code when executing upload init: "+code);
+		entity = response.getEntity();
+
+		JsonObject ret = new JsonParser().parse(EntityUtils.toString(entity)).getAsJsonObject();
+		if (!ret.has("upload_url")) {
+			throw new RuntimeException("Failed to upload mod due to '"+ret.get("error").getAsString()+"': "+ret.get("message").getAsString());
+		}
+		url = ret.get("upload_url").getAsString();
+
+		post = new HttpPost(url);
+		post.addHeader("Authorization", "Bearer "+apiKey);
+		FileBody fileBody = new FileBody(outputFile, ContentType.DEFAULT_BINARY);
+		builder = MultipartEntityBuilder.create();
+		builder.setMode(HttpMultipartMode.EXTENDED);
+		builder.addPart("file", fileBody);
+		entity = builder.build();
+		post.setEntity(entity);
+		response = (CloseableHttpResponse)client.execute(post);
+		entity = response.getEntity();
+		ret = new JsonParser().parse(EntityUtils.toString(entity)).getAsJsonObject();
+		if (!ret.get("success").getAsBoolean()) {
+			throw new RuntimeException("Failed to upload mod due to '"+ret.get("error").getAsString()+"': "+ret.get("message").getAsString());
+		}
 	}
 
 	private ModVersion getVersionOverride() {

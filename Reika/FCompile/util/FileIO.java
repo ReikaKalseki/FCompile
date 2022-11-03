@@ -104,23 +104,6 @@ public class FileIO {
 		return null;
 	}
 
-	public static void deleteDirectoryWithContents(File folder) {
-		File[] files = folder.listFiles();
-		if (files != null) { //some JVMs return null for empty dirs
-			for (File f : files) {
-				if (f.isDirectory()) {
-					deleteDirectoryWithContents(f);
-				}
-				else {
-					//System.out.println("Deleting raw file " + f);
-					f.delete();
-				}
-			}
-		}
-		//System.out.println("Deleting folder " + folder);
-		folder.delete();
-	}
-
 	public static void writeLinesToFile(String s, ArrayList<String> li, boolean keepContents) throws IOException {
 		writeLinesToFile(new File(s), li, keepContents);
 	}

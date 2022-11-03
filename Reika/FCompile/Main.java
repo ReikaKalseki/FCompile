@@ -1,11 +1,15 @@
 package Reika.FCompile;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
+
+import com.google.common.base.Strings;
 
 import Reika.FCompile.Compile.FileSwap;
 import Reika.FCompile.Compile.InfoJsonParser;
@@ -31,15 +35,17 @@ public class Main {
 		if (!modDir.exists())
 			throw new IllegalArgumentException("Specified mod directory does not exist!");
 		File log = prepareLogger(logFile);
+
+		PrintStream logging = new PrintStream(new FileOutputStream(log, true));
+		System.setOut(new TStream(System.out, logging));
+		System.setErr(new TStream(System.err, logging));
+
 		ArrayList<FileSwap> swaps = loadSwaps(settings);
 		File[] files = modDir.listFiles();
 		ArrayList<ModCompile> mods = new ArrayList();
 		String author = settings.getSetting("target_author");
 		File output = new File(settings.getSetting("output_directory"));
-		if (settings.getBooleanSetting("clean_output")) {
-			FileIO.deleteDirectoryWithContents(output);
-		}
-		output.mkdirs();
+
 		for (File f : files) {
 			if (f.isDirectory()) {
 				InfoJsonParser p = new InfoJsonParser(f);
@@ -51,18 +57,31 @@ public class Main {
 				}
 			}
 		}
+
 		if (mods.isEmpty()) {
 			log("Found no mods by '" + author + "'!");
 			return;
 		}
+
+		for (ModCompile mod : mods) {
+			mod.setOutput(output);
+		}
+
+		output.mkdirs();
+
 		flushLogger(log);
 		ArrayList<String> failed = new ArrayList();
 		int compiled = 0;
+		int thresh = settings.getIntSetting("min_age");
 		for (ModCompile mod : mods) {
 			try {
 				long time = System.currentTimeMillis();
+				if (mod.isTooNew(thresh, time)) {
+					log("Skipping '" + mod.info.getName() + "' v" + mod.info.getVersion() + " - too new");
+					continue;
+				}
 				log("Compiling '" + mod.info.getName() + "' v" + mod.info.getVersion() + "...");
-				mod.compile(output, swaps);
+				mod.compile(swaps);
 				log("Compiled '" + mod.info.getName() + "' in " + (System.currentTimeMillis() - time) + " ms.");
 				compiled++;
 			}
@@ -82,6 +101,38 @@ public class Main {
 			}
 		}
 		flushLogger(log);
+		log("===================================================================");
+		String apiKey = settings.getSetting("api_key");
+		if (!Strings.isNullOrEmpty(apiKey)) {
+			log("Attempting uploads.");
+			log("===================================================================");
+			failed.clear();
+			compiled = 0;
+			for (ModCompile mod : mods) {
+				try {
+					long time = System.currentTimeMillis();
+					log("Uploading '" + mod.info.getName() + "' v" + mod.info.getVersion() + "...");
+					mod.upload(apiKey);
+					log("Uploaded '" + mod.info.getName() + "' in " + (System.currentTimeMillis() - time) + " ms.");
+					compiled++;
+				}
+				catch (Exception e) {
+					log("Could not upload '" + mod.info.getName() + "' v" + mod.info.getVersion() + "!");
+					e.printStackTrace();
+					failed.add(mod.info.getName());
+				}
+				flushLogger(log);
+			}
+			log("===================================================================");
+			log("Successfully uploaded " + compiled + "/" + mods.size() + " mods.");
+			if (!failed.isEmpty()) {
+				log(failed.size() + " mods failed to upload:");
+				for (String s : failed) {
+					log(s);
+				}
+			}
+			flushLogger(log);
+		}
 		System.out.println("Terminating.");
 	}
 
@@ -120,8 +171,15 @@ public class Main {
 	}
 
 	public static void log(String s) {
-		System.out.println(s);
-		logger.add(getTimestamp() + s);
+		log(s, false);
+	}
+
+	public static void log(String s, boolean isError) {
+		if (isError)
+			System.err.println(s);
+		else
+			System.out.println(s);
+		//logger.add(getTimestamp() + s);
 	}
 
 	private static String getTimestamp() {
@@ -141,5 +199,27 @@ public class Main {
 
 	private static int loadArgOrDefault(int arg, String[] args, int def) {
 		return args.length > arg ? Integer.parseInt(args[arg]) : def;
+	}
+
+	private static class TStream extends PrintStream {
+
+		private final PrintStream out;
+
+		private TStream(PrintStream out1, PrintStream out2) {
+			super(out1);
+			out = out2;
+		}
+
+		@Override
+		public void write(byte buf[], int off, int len) {
+			super.write(buf, off, len);
+			out.write(buf, off, len);
+		}
+
+		@Override
+		public void flush() {
+			super.flush();
+			out.flush();
+		}
 	}
 }
