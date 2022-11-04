@@ -12,18 +12,25 @@ import java.util.ArrayList;
 import java.util.HashSet;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.hc.client5.http.classic.HttpClient;
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.client5.http.entity.mime.FileBody;
 import org.apache.hc.client5.http.entity.mime.HttpMultipartMode;
 import org.apache.hc.client5.http.entity.mime.MultipartEntityBuilder;
 import org.apache.hc.client5.http.entity.mime.StringBody;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.socket.ConnectionSocketFactory;
+import org.apache.hc.client5.http.socket.PlainConnectionSocketFactory;
+import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactory;
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.HttpEntity;
+import org.apache.hc.core5.http.URIScheme;
+import org.apache.hc.core5.http.config.Registry;
+import org.apache.hc.core5.http.config.RegistryBuilder;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 
+import com.google.common.base.Strings;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -31,7 +38,7 @@ import Reika.FCompile.Main;
 import Reika.FCompile.Settings;
 import Reika.FCompile.util.FileIO;
 
-public class ModCompile {
+public class ModCompile implements Runnable {
 
 	//private static final String WORKING_DIRECTORY = "compiletemp";
 
@@ -48,8 +55,18 @@ public class ModCompile {
 	private final ArrayList<String> soundFilter = new ArrayList();
 
 	private File outputFile;
+	private File workingDir;
+
 	private long lastModified;
 	private long lastSize;
+
+	private Changelog changelog;
+
+	private Thread thread;
+
+	private boolean complete = false;
+	private boolean compiled = false;
+	private boolean released = false;
 
 	public ModCompile(File f, InfoJsonParser p, Settings s) {
 		modFolder = f;
@@ -59,18 +76,91 @@ public class ModCompile {
 		logPerFile = settings.getBooleanSetting("log_per_file");
 
 		this.loadFilters();
+
+		thread = new Thread(this, "Compiling "+info.getName());
 	}
 
-	public void setOutput(File out) {
+	public void run() {
+		try {
+			long time = System.currentTimeMillis();
+			long t0 = time;
+
+			this.setOutput();
+
+			if (this.isTooNew(settings.getIntSetting("min_age"), time)) {
+				Main.log("Skipping '" + info.getName() + "' v" + info.getVersion() + " - too new");
+				compiled = true;
+			}
+			else {
+				Main.log("Compiling '" + info.getName() + "' v" + info.getVersion() + "...");
+				this.compile();
+				this.prepareChangelogs();
+				this.zip();
+				long t1 = System.currentTimeMillis();
+				Main.log("Compiled '" + info.getName() + "' in " + (t1 - time) + " ms.");
+				time = t1;
+				compiled = true;
+			}
+
+			if (compiled) {
+				String apiKey = settings.getSetting("api_key");
+				if (!Strings.isNullOrEmpty(apiKey)) {
+					Main.log("Uploading '" + info.getName() + "' v" + info.getVersion() + "...");
+					if (this.upload(apiKey))
+						Main.log("Uploaded '" + info.getName() + "' in " + (System.currentTimeMillis() - time) + " ms.");
+					else
+						Main.log("Upload of '" + info.getName() + "' failed.", false);
+					released = true;
+				}
+				else {
+					Main.log("Skipping upload of '" + info.getName() + "'");
+				}
+			}
+			else {
+				Main.log("Compile of '" + info.getName() + "' was unsuccessful!", true);
+			}
+
+			Main.log("Finished build of '" + info.getName() + "' in "+(System.currentTimeMillis() - t0) + " ms: "+this.getStatus());
+			Main.flushLogger();
+		}
+		catch (Exception e) {
+			Main.log("Could not produce output for '" + info.getName() + "' v" + info.getVersion() + "!", true);
+			e.printStackTrace();
+		}
+		complete = true;
+	}
+
+	public void start() {
+		Main.log("Starting compile thread for "+info.getName());
+		thread.start();
+	}
+
+	public String getStatus() {
+		return "Compiled: "+compiled+"; Released: "+released;
+	}
+
+	public boolean isComplete() {
+		return complete;
+	}
+
+	private void setOutput() {
 		ModVersion override = this.getVersionOverride();
 		String folderName = override == null ? modFolder.getName() : this.calcFolderName(override);
-		outputFile = new File(out, folderName + ".zip");
+		outputFile = new File(Main.rootOutput, folderName + ".zip");
 		lastModified = outputFile.exists() ? outputFile.lastModified() : -1;
 		lastSize = outputFile.exists() ? outputFile.length() : 0;
+
+		workingDir = new File(outputFile.getParentFile(), outputFile.getName().substring(0, outputFile.getName().length()-4));
+		workingDir.mkdir();
 	}
 
 	public boolean isTooNew(int thresh, long time) {
 		return (time-lastModified) <= thresh*1000;
+	}
+
+	@Override
+	public String toString() {
+		return info.getName()+" @ "+info.getAuthor();
 	}
 
 	private void loadFilters() {
@@ -95,26 +185,47 @@ public class ModCompile {
 		}
 	}
 
-	public void compile(ArrayList<FileSwap> swaps) throws IOException {
+	private void prepareChangelogs() throws Exception {
+		File f = new File(modFolder, "changelog.txt");
+		if (f.exists()) {
+			Main.log("Preparing changelog for '"+info.getName()+"'");
+			changelog = new Changelog(this, f, new File(workingDir, f.getName()));
+			changelog.generate();
+		}
+	}
+
+	private void compile() throws Exception {
 		//File workingDir = new File(new File(output, info.getName()), WORKING_DIRECTORY);
-		File workingDir = new File(outputFile.getParentFile(), outputFile.getName().substring(0, outputFile.getName().length()-4));
-		workingDir.mkdir();
 		ModVersion override = this.getVersionOverride();
 		for (File f : modFolder.listFiles()) {
-			this.handleFileInFolder(f, workingDir, override, swaps);
+			this.handleFileInFolder(f, workingDir, override);
 		}
 		outputFile.delete();
 		if (outputFile.exists()) {
 			FileUtils.deleteDirectory(workingDir);
 			throw new RuntimeException("Cannot compile " + info.getName() + "; output file already exists!");
 		}
-		//ZipHelper.zipFolder(workingDir.getAbsolutePath(), zip.getAbsolutePath());
+	}
+
+	private void zip() throws Exception {
 		FileIO.zipFolder(workingDir.getAbsolutePath(), outputFile.getAbsolutePath());
 		FileUtils.deleteDirectory(workingDir);
 	}
 
-	public void upload(String apiKey) throws Exception {
-		HttpClient client = HttpClients.createDefault();
+	// copy from BasicHttpClientConnectionManager
+	private static Registry<ConnectionSocketFactory> getDefaultRegistry() {
+		return RegistryBuilder.<ConnectionSocketFactory>create()
+				.register(URIScheme.HTTP.id, PlainConnectionSocketFactory.getSocketFactory())
+				.register(URIScheme.HTTPS.id, SSLConnectionSocketFactory.getSocketFactory())
+				.build();
+	}
+
+	private boolean upload(String apiKey) throws Exception {
+		//Http1Config cfg = Http1Config.custom().setBufferSize(8192*8192).build();
+		//HttpConnectionFactory<ManagedHttpClientConnection> connectionFactory = ManagedHttpClientConnectionFactory.builder().http1Config(cfg).build();
+		//BasicHttpClientConnectionManager connectionManager = new BasicHttpClientConnectionManager(getDefaultRegistry(), connectionFactory);
+		//CloseableHttpClient client = HttpClientBuilder.create().setConnectionManager(connectionManager).build();
+		CloseableHttpClient client = HttpClients.createSystem();
 		String url = "https://mods.factorio.com/api/v2/mods/releases/init_upload";
 		//HttpsURLConnection c = (HttpsURLConnection)new URL(url).openConnection();
 		//c.setRequestMethod("POST");
@@ -126,11 +237,11 @@ public class ModCompile {
 		builder.addPart("mod", modname);
 		HttpEntity entity = builder.build();
 		post.setEntity(entity);
-		CloseableHttpResponse response = (CloseableHttpResponse)client.execute(post);
+		CloseableHttpResponse response = client.execute(post);
 		int code = response.getCode();
 		if (code == 404) {
 			Main.log("Could not find mod portal entry for '"+info.getName()+"'; is the mod not released?", true);
-			return;
+			return false;
 		}
 		if (code != 200)
 			throw new RuntimeException("Received error code when executing upload init: "+code);
@@ -150,12 +261,16 @@ public class ModCompile {
 		builder.addPart("file", fileBody);
 		entity = builder.build();
 		post.setEntity(entity);
-		response = (CloseableHttpResponse)client.execute(post);
+		response = client.execute(post);
 		entity = response.getEntity();
-		ret = new JsonParser().parse(EntityUtils.toString(entity)).getAsJsonObject();
-		if (!ret.get("success").getAsBoolean()) {
+		String data = EntityUtils.toString(entity);
+		ret = new JsonParser().parse(data).getAsJsonObject();
+		if (ret == null)
+			throw new RuntimeException("Failed to upload mod - got back invalid data: "+data);
+		if (!ret.has("success") || !ret.get("success").getAsBoolean()) {
 			throw new RuntimeException("Failed to upload mod due to '"+ret.get("error").getAsString()+"': "+ret.get("message").getAsString());
 		}
+		return true;
 	}
 
 	private ModVersion getVersionOverride() {
@@ -172,7 +287,7 @@ public class ModCompile {
 		return pre + "_" + override.toString();
 	}
 
-	private void handleFileInFolder(File f, File workingDir, ModVersion override, ArrayList<FileSwap> swaps) throws IOException {
+	private void handleFileInFolder(File f, File workingDir, ModVersion override) throws IOException {
 		String n = f.getName();
 		//if (n.equals(WORKING_DIRECTORY))
 		//	return;
@@ -186,7 +301,7 @@ public class ModCompile {
 		}
 		if (f.isDirectory()) {
 			for (File f2 : f.listFiles()) {
-				this.handleFileInFolder(f2, workingDir, override, swaps);
+				this.handleFileInFolder(f2, workingDir, override);
 			}
 		}
 		else {
@@ -195,7 +310,7 @@ public class ModCompile {
 			if (logPerFile)
 				Main.log("Parsing file: " + fr + "; ignored: " + ignore);
 			if (!ignore) {
-				for (FileSwap s : swaps) {
+				for (FileSwap s : Main.swaps) {
 					if (s.matchFile(this, f)) {
 						File repl = s.getSwap();
 						Main.log("Swapping file '"+f+"' with '"+repl+"'");

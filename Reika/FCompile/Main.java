@@ -8,8 +8,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
-
-import com.google.common.base.Strings;
+import java.util.HashSet;
 
 import Reika.FCompile.Compile.FileSwap;
 import Reika.FCompile.Compile.InfoJsonParser;
@@ -23,9 +22,13 @@ public class Main {
 	private static final Calendar calendar = Calendar.getInstance();
 	private static final SimpleDateFormat date = new SimpleDateFormat("dd-MM-yyyy/HH:mm:ss.SSS");
 
+	public static ArrayList<FileSwap> swaps;
+	public static File rootOutput;
+	private static File logFile;
+
 	public static void main(String[] args) throws IOException {
 		String set = loadArgOrDefault(0, args, "settings.ini");
-		String logFile = loadArgOrDefault(1, args, "status.log");
+		String logFN = loadArgOrDefault(1, args, "status.log");
 		File setFile = new File(set);
 		if (!setFile.exists())
 			throw new IllegalArgumentException("Settings file does not exist at " + setFile.getAbsolutePath() + "!");
@@ -34,17 +37,17 @@ public class Main {
 		File modDir = new File(modFolder);
 		if (!modDir.exists())
 			throw new IllegalArgumentException("Specified mod directory does not exist!");
-		File log = prepareLogger(logFile);
+		logFile = prepareLogger(logFN);
 
-		PrintStream logging = new PrintStream(new FileOutputStream(log, true));
+		PrintStream logging = new PrintStream(new FileOutputStream(logFile, true));
 		System.setOut(new TStream(System.out, logging));
 		System.setErr(new TStream(System.err, logging));
 
-		ArrayList<FileSwap> swaps = loadSwaps(settings);
+		swaps = loadSwaps(settings);
 		File[] files = modDir.listFiles();
 		ArrayList<ModCompile> mods = new ArrayList();
 		String author = settings.getSetting("target_author");
-		File output = new File(settings.getSetting("output_directory"));
+		rootOutput = new File(settings.getSetting("output_directory"));
 
 		for (File f : files) {
 			if (f.isDirectory()) {
@@ -63,76 +66,45 @@ public class Main {
 			return;
 		}
 
+		rootOutput.mkdirs();
+
+		log("=====================");
 		for (ModCompile mod : mods) {
-			mod.setOutput(output);
+			mod.start();
 		}
-
-		output.mkdirs();
-
-		flushLogger(log);
-		ArrayList<String> failed = new ArrayList();
-		int compiled = 0;
-		int thresh = settings.getIntSetting("min_age");
-		for (ModCompile mod : mods) {
+		log("=====================");
+		long delay = 100;
+		long lastPrint = -1;
+		long start = System.currentTimeMillis();
+		HashSet<String> ongoing = new HashSet();
+		ongoing.add("temp");
+		while (!ongoing.isEmpty()) {
+			ongoing.clear();
 			try {
-				long time = System.currentTimeMillis();
-				if (mod.isTooNew(thresh, time)) {
-					log("Skipping '" + mod.info.getName() + "' v" + mod.info.getVersion() + " - too new");
-					continue;
-				}
-				log("Compiling '" + mod.info.getName() + "' v" + mod.info.getVersion() + "...");
-				mod.compile(swaps);
-				log("Compiled '" + mod.info.getName() + "' in " + (System.currentTimeMillis() - time) + " ms.");
-				compiled++;
+				Thread.sleep(100);
 			}
-			catch (Exception e) {
-				log("Could not compile '" + mod.info.getName() + "' v" + mod.info.getVersion() + "!");
+			catch (InterruptedException e) {
 				e.printStackTrace();
-				failed.add(mod.info.getName());
 			}
-			flushLogger(log);
-		}
-		log("===================================================================");
-		log("Successfully compiled " + compiled + "/" + mods.size() + " mods.");
-		if (!failed.isEmpty()) {
-			log(failed.size() + " mods failed to compile:");
-			for (String s : failed) {
-				log(s);
-			}
-		}
-		flushLogger(log);
-		log("===================================================================");
-		String apiKey = settings.getSetting("api_key");
-		if (!Strings.isNullOrEmpty(apiKey)) {
-			log("Attempting uploads.");
-			log("===================================================================");
-			failed.clear();
-			compiled = 0;
 			for (ModCompile mod : mods) {
-				try {
-					long time = System.currentTimeMillis();
-					log("Uploading '" + mod.info.getName() + "' v" + mod.info.getVersion() + "...");
-					mod.upload(apiKey);
-					log("Uploaded '" + mod.info.getName() + "' in " + (System.currentTimeMillis() - time) + " ms.");
-					compiled++;
-				}
-				catch (Exception e) {
-					log("Could not upload '" + mod.info.getName() + "' v" + mod.info.getVersion() + "!");
-					e.printStackTrace();
-					failed.add(mod.info.getName());
-				}
-				flushLogger(log);
-			}
-			log("===================================================================");
-			log("Successfully uploaded " + compiled + "/" + mods.size() + " mods.");
-			if (!failed.isEmpty()) {
-				log(failed.size() + " mods failed to upload:");
-				for (String s : failed) {
-					log(s);
+				if (!mod.isComplete()) {
+					ongoing.add(mod.info.getName());
 				}
 			}
-			flushLogger(log);
+			long time = System.currentTimeMillis();
+			if (time-lastPrint >= delay) {
+				log("      "+ongoing.size()+" mods are still being processed: "+ongoing+"...");
+				lastPrint = time;
+			}
+			if (time-start >= 60000) //1min
+				delay = 15000;
+			else if (time-start >= 15000) //1min
+				delay = 5000;
+			else if (time-start >= 2500)
+				delay = 1000;
 		}
+		log("=====================");
+
 		System.out.println("Terminating.");
 	}
 
@@ -147,11 +119,11 @@ public class Main {
 		return li;
 	}
 
-	private static void flushLogger(File log) throws IOException {
+	public static void flushLogger() throws IOException {
 		if (logger.isEmpty())
 			return;
 		try {
-			FileIO.writeLinesToFile(log, logger, true);
+			FileIO.writeLinesToFile(logFile, logger, true);
 			logger.clear();
 		}
 		catch (IOException e) {
@@ -160,8 +132,8 @@ public class Main {
 		}
 	}
 
-	private static File prepareLogger(String logFile) throws IOException {
-		File log = new File(logFile);
+	private static File prepareLogger(String s) throws IOException {
+		File log = new File(s);
 		if (log.exists())
 			log.delete();
 		if (log.getParentFile() != null)
