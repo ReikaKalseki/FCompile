@@ -7,10 +7,12 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.EnumMap;
 import java.util.Locale;
 import java.util.Map.Entry;
+import java.util.TreeMap;
 
 import com.google.common.base.Strings;
 
@@ -22,14 +24,21 @@ public class Changelog {
 	private final File inputFile;
 	public final File outputFile;
 
-	private final ArrayList<Release> releases = new ArrayList<Release>();
+	private final TreeMap<String, ArrayList<Release>> releases = new TreeMap(Comparator.reverseOrder());
 
-	private static final String SEPARATOR = "---------------------------------------";
+	private static final String SEPARATOR = getStringOf("-", 99);
 
 	public Changelog(ModCompile mod, File in, File out) {
 		this.mod = mod;
 		inputFile = in;
 		outputFile = out;
+	}
+
+	private static String getStringOf(String s, int n) {
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < n; i++)
+			sb.append(s);
+		return sb.toString();
 	}
 
 	public void generate() throws IOException {
@@ -38,11 +47,12 @@ public class Changelog {
 		ArrayList<String> li = FileIO.getFileAsLines(inputFile);
 		ReleaseCandidate releaseCandidate = null;
 		for (String s : li) {
+			s = s.trim();
 			if (s.isEmpty())
 				continue;
 			else if (s.startsWith("------")) {
 				if (releaseCandidate != null)
-					releases.add(releaseCandidate.build());
+					this.addRelease(releaseCandidate.build());
 				releaseCandidate = new ReleaseCandidate();
 			}
 			else if (s.startsWith("Version:")) {
@@ -60,18 +70,45 @@ public class Changelog {
 					releaseCandidate = new ReleaseCandidate();
 				releaseCandidate.gameVersion = s.substring("Game:".length());
 			}
-			else {
+			else if (s.startsWith("-")) {
 				releaseCandidate.list.add(s);
 			}
 		}
-		Collections.sort(releases);
+		this.cleanupReleaseList();
 		ArrayList<String> li2 = new ArrayList();
-		li2.add(SEPARATOR);
-		for (Release r : releases) {
-			r.generateOutput(li2);
-			li2.add(SEPARATOR);
+		for (ArrayList<Release> lir : releases.values()) {
+			for (Release r : lir) {
+				li2.add(SEPARATOR);
+				r.generateOutput(li2);
+			}
 		}
 		FileIO.writeLinesToFile(outputFile, li2, false);
+	}
+
+	private void addRelease(Release r) {
+		ArrayList<Release> li = releases.get(r.gameVersion);
+		if (li == null) {
+			li = new ArrayList();
+			releases.put(r.gameVersion, li);
+		}
+		li.add(r);
+		Collections.sort(li);
+	}
+
+	private void cleanupReleaseList() {
+		for (int i = releases.size()-1; i > 0; i--) {
+			Release r0 = releases.get(i);
+			Release r1 = releases.get(i-1);
+			if (r0.name.equals("0.0.0")) {
+				releases.remove(i);
+				continue;
+			}
+			if (r0.name.equals(r1.name)) {
+				r1.merge(r0);
+				releases.remove(i);
+				continue;
+			}
+		}
 	}
 
 	private static class ReleaseCandidate {
@@ -102,6 +139,8 @@ public class Changelog {
 		private final String gameVersion;
 		private final String date;
 
+		private final String outputName;
+
 		private final Date dateValue;
 		private final Calendar calendar = Calendar.getInstance();
 
@@ -109,6 +148,7 @@ public class Changelog {
 
 		private Release(String n, String gv, String d) {
 			name = n;
+			outputName = name;
 			date = d.trim();
 
 			try {
@@ -122,13 +162,25 @@ public class Changelog {
 			gameVersion = Strings.isNullOrEmpty(gv) ? this.tryGetGameVersion() : gv;
 		}
 
+		@Override
+		public String toString() {
+			return name+" @ "+date+" > "+changes.keySet().size();
+		}
+
+		public void merge(Release r0) {
+			for (Entry<Category, ArrayList<String>> e : r0.changes.entrySet()) {
+				for (String s : e.getValue())
+					this.addChange(e.getKey(), s);
+			}
+		}
+
 		public void generateOutput(ArrayList<String> li) {
-			li.add("Version: "+name);
+			li.add("Version: "+outputName);
 			li.add("Date: "+date);
 			for (Entry<Category, ArrayList<String>> e : changes.entrySet()) {
-				li.add("\t- "+e.getKey().displayName);
+				li.add("  "+e.getKey().displayName+":");
 				for (String s : e.getValue())
-					li.add("\t\t- "+s);
+					li.add("    - "+s);
 			}
 		}
 
