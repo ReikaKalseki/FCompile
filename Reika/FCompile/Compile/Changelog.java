@@ -107,7 +107,7 @@ public class Changelog {
 			}
 			if (parts[1].equals("0") || parts[1].length() == 2)
 				parts[1] = parts[2];
-			r.outputName = /*parts[0]+*/"1."+gv.replace(".", "")+"."+parts[1];
+			r.outputName = parts[0]+"."+gv.replace(".", "")+"."+parts[1];
 			//System.out.println(r.name+" > "+r.outputName);
 		}
 	}
@@ -234,7 +234,7 @@ public class Changelog {
 			else if (sl.startsWith("added") || sl.startsWith("new")) {
 				cat = Category.FEATURE;
 			}
-			else if (sl.contains("balance")) {
+			else if (sl.contains("balance") || sl.startsWith("decreased") || sl.startsWith("increased")) {
 				cat = Category.BALANCE;
 			}
 			else if (sl.startsWith("remove")) {

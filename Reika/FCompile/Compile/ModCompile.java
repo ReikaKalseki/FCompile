@@ -186,7 +186,7 @@ public class ModCompile implements Runnable {
 	}
 
 	private void prepareChangelogs() throws Exception {
-		File f = new File(modFolder, "changelog.txt");
+		File f = new File(modFolder, "changelog-input.txt");
 		if (f.exists()) {
 			Main.log("Preparing changelog for '"+info.getName()+"'");
 			changelog = new Changelog(this, f, new File(workingDir, f.getName()));
