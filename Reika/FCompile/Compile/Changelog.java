@@ -7,12 +7,10 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.Date;
 import java.util.EnumMap;
 import java.util.Locale;
 import java.util.Map.Entry;
-import java.util.TreeMap;
 
 import com.google.common.base.Strings;
 
@@ -24,7 +22,7 @@ public class Changelog {
 	private final File inputFile;
 	public final File outputFile;
 
-	private final TreeMap<String, ArrayList<Release>> releases = new TreeMap(Comparator.reverseOrder());
+	private final ArrayList<Release> releases = new ArrayList<Release>();
 
 	private static final String SEPARATOR = getStringOf("-", 99);
 
@@ -52,7 +50,7 @@ public class Changelog {
 				continue;
 			else if (s.startsWith("------")) {
 				if (releaseCandidate != null)
-					this.addRelease(releaseCandidate.build());
+					releases.add(releaseCandidate.build());
 				releaseCandidate = new ReleaseCandidate();
 			}
 			else if (s.startsWith("Version:")) {
@@ -74,25 +72,14 @@ public class Changelog {
 				releaseCandidate.list.add(s);
 			}
 		}
+		Collections.sort(releases);
 		this.cleanupReleaseList();
 		ArrayList<String> li2 = new ArrayList();
-		for (ArrayList<Release> lir : releases.values()) {
-			for (Release r : lir) {
-				li2.add(SEPARATOR);
-				r.generateOutput(li2);
-			}
+		for (Release r : releases) {
+			li2.add(SEPARATOR);
+			r.generateOutput(li2);
 		}
 		FileIO.writeLinesToFile(outputFile, li2, false);
-	}
-
-	private void addRelease(Release r) {
-		ArrayList<Release> li = releases.get(r.gameVersion);
-		if (li == null) {
-			li = new ArrayList();
-			releases.put(r.gameVersion, li);
-		}
-		li.add(r);
-		Collections.sort(li);
 	}
 
 	private void cleanupReleaseList() {
@@ -108,6 +95,20 @@ public class Changelog {
 				releases.remove(i);
 				continue;
 			}
+		}
+		for (Release r : releases) {
+			int idx = r.outputName.indexOf('.');
+			String[] parts = r.name.split("\\.");
+			String[] parts1 = r.name.split("\\.");
+			String gv = r.gameVersion;
+			if (gv.startsWith("1.")) {
+				int subVer = Integer.parseInt(gv.substring(2));
+				gv = String.format("%03d", 100+subVer);
+			}
+			if (parts[1].equals("0") || parts[1].length() == 2)
+				parts[1] = parts[2];
+			r.outputName = /*parts[0]+*/"1."+gv.replace(".", "")+"."+parts[1];
+			//System.out.println(r.name+" > "+r.outputName);
 		}
 	}
 
@@ -139,7 +140,7 @@ public class Changelog {
 		private final String gameVersion;
 		private final String date;
 
-		private final String outputName;
+		private String outputName;
 
 		private final Date dateValue;
 		private final Calendar calendar = Calendar.getInstance();
@@ -205,6 +206,8 @@ public class Changelog {
 				return "0.16";
 			if (yr == 2017)
 				return "0.15";
+			if (yr == 2016)
+				return "0.14";
 			if (yr == 2015)
 				return calendar.get(Calendar.MONTH) < 10 ? "0.11" : "0.12";
 			throw new RuntimeException("Indeterminate game version: "+name+"/"+date);
@@ -225,13 +228,16 @@ public class Changelog {
 				s = s.substring(1).trim();
 			Category cat = Category.GENERIC;
 			String sl = s.toLowerCase(Locale.ENGLISH);
-			if (sl.contains("fix") || sl.contains("issue") || sl.contains("crash")) {
+			if (sl.startsWith("fix") || sl.startsWith("missing") || sl.contains("issue") || sl.contains("script error") || sl.contains("crash")) {
 				cat = Category.FIX;
 			}
-			if (sl.contains("added") || sl.contains("new")) {
+			else if (sl.startsWith("added") || sl.startsWith("new")) {
 				cat = Category.FEATURE;
 			}
-			if (sl.contains("remove")) {
+			else if (sl.contains("balance")) {
+				cat = Category.BALANCE;
+			}
+			else if (sl.startsWith("remove")) {
 				cat = Category.REMOVE;
 			}
 			this.addChange(cat, s);
@@ -257,6 +263,7 @@ public class Changelog {
 	private enum Category {
 		FIX("Bugfixes"),
 		FEATURE("New Features"),
+		BALANCE("Rebalancing"),
 		GENERIC("Misc Changes"),
 		REMOVE("Removed Features");
 
