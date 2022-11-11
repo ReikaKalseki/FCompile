@@ -1,30 +1,89 @@
 package Reika.FCompile.Compile;
 
+import java.io.BufferedReader;
 import java.io.File;
-import java.io.IOException;
+import java.net.URL;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.Date;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map.Entry;
+import java.util.TreeMap;
 
 import com.google.common.base.Strings;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.stream.JsonReader;
 
+import Reika.FCompile.Main;
 import Reika.FCompile.util.FileIO;
 
 public class Changelog {
+
+	private static final Date game10Release = parseDateStatic("Aug 14 2020");
+
+	private static final TreeMap<Date, String> gameVersions = new TreeMap();
+
+	private static final String SEPARATOR = getStringOf("-", 99);
+
+	private final Calendar throwawayCalendar = Calendar.getInstance();
 
 	public final ModCompile mod;
 	private final File inputFile;
 	public final File outputFile;
 
-	private final ArrayList<Release> releases = new ArrayList<Release>();
+	private final ArrayList<Release> releases = new ArrayList();
+	private final HashMap<String, ReleaseCandidate> portalData = new HashMap();
 
-	private static final String SEPARATOR = getStringOf("-", 99);
+	private final SimpleDateFormat dateFormat = new SimpleDateFormat("MMM d yyyy"); //DO NOT MAKE STATIC - not threadsafe
+
+	static {
+		gameVersions.put(parseDateStatic("Jan 13 2013"), "0.2");
+		gameVersions.put(parseDateStatic("Mar 29 2013"), "0.3");
+		gameVersions.put(parseDateStatic("May 3 2013"), "0.4");
+		gameVersions.put(parseDateStatic("Jun 7 2013"), "0.5");
+		gameVersions.put(parseDateStatic("Jul 26 2013"), "0.6");
+		gameVersions.put(parseDateStatic("Sep 27 2013"), "0.7");
+		gameVersions.put(parseDateStatic("Dec 6 2013"), "0.8");
+		gameVersions.put(parseDateStatic("Feb 14 2014"), "0.9");
+		gameVersions.put(parseDateStatic("Jun 6 2014"), "0.10");
+		gameVersions.put(parseDateStatic("Oct 31 2014"), "0.11");
+		gameVersions.put(parseDateStatic("Jul 17 2015"), "0.12");
+		gameVersions.put(parseDateStatic("Jun 27 2016"), "0.13");
+		gameVersions.put(parseDateStatic("Aug 26 2016"), "0.14");
+		gameVersions.put(parseDateStatic("Apr 24 2017"), "0.15");
+		gameVersions.put(parseDateStatic("Dec 13 2017"), "0.16");
+		gameVersions.put(parseDateStatic("Feb 26 2019"), "0.17");
+		gameVersions.put(parseDateStatic("Jan 21 2020"), "0.18");
+		gameVersions.put(game10Release, "1.0");
+		gameVersions.put(parseDateStatic("Nov 23 2020"), "1.1");
+	}
+
+	private static Date parseDateStatic(String s) {
+		try {
+			return new SimpleDateFormat("MMM d yyyy").parse(s.trim());
+		}
+		catch (ParseException e) {
+			throw new RuntimeException(e);
+		}
+	}
+
+	private Date parseDate(String s) {
+		try {
+			return dateFormat.parse(s.trim());
+		}
+		catch (ParseException e) {
+			throw new RuntimeException(e);
+		}
+	}
 
 	public Changelog(ModCompile mod, File in, File out) {
 		this.mod = mod;
@@ -39,7 +98,51 @@ public class Changelog {
 		return sb.toString();
 	}
 
-	public void generate() throws IOException {
+	private void loadVersionData() throws Exception {
+		File f9 = new File("cached_version_data");
+		if (!f9.exists())
+			f9.mkdirs();
+
+		String id = mod.info.getName();
+		File json = new File(f9, id+".json");
+		if (!json.exists() || json.length() == 0 || json.lastModified()+1000L*mod.settings.getIntSetting("ver_cache_lifetime") < System.currentTimeMillis()) {
+			Main.log("Downloading mod portal data for "+mod);
+			json.createNewFile();
+			String url = "https://mods.factorio.com/api/mods/"+id+"/full";
+			try (BufferedReader r = FileIO.getReader(new URL(url), 5000)) {
+				if (r == null) {
+					Main.log("Could not read URL '"+url+"'! Is the mod not released?", true);
+				}
+				else {
+					FileIO.writeLinesToFile(json, FileIO.getFileAsLines(r), false);
+				}
+			}
+		}
+		try (BufferedReader r = FileIO.getReader(json)) {
+			JsonReader jr = new JsonReader(r);
+			jr.setLenient(true);
+			JsonElement e = new JsonParser().parse(jr); //root JSONObject
+			if (e instanceof JsonObject) {
+				JsonObject j = (JsonObject)e;
+				String creation = j.get("created_at").getAsString(); //format: 2019-06-06T17:29:53.131000Z
+				JsonArray downloads = (JsonArray)j.get("releases");
+				for (JsonElement d : downloads) {
+					JsonObject table = (JsonObject)d;
+					String date = table.get("released_at").getAsString();
+					String ver = table.get("version").getAsString();
+					String gv = table.get("info_json").getAsJsonObject().get("factorio_version").getAsString();
+					Date time = Date.from(Instant.parse(date));
+					if (gv.equals("0.18") && time.compareTo(game10Release) >= 0) {
+						gv = "1.0";
+					}
+					portalData.put(ver, new ReleaseCandidate(ver, gv, time));
+				}
+			}
+		}
+	}
+
+	public void generate() throws Exception {
+		this.loadVersionData();
 		outputFile.delete();
 		outputFile.createNewFile();
 		ArrayList<String> li = FileIO.getFileAsLines(inputFile);
@@ -61,7 +164,7 @@ public class Changelog {
 			else if (s.startsWith("Date:")) {
 				if (releaseCandidate == null)
 					releaseCandidate = new ReleaseCandidate();
-				releaseCandidate.date = s.substring("Date:".length());
+				releaseCandidate.date = this.parseDate(s.substring("Date:".length()));
 			}
 			else if (s.startsWith("Game:")) {
 				if (releaseCandidate == null)
@@ -112,16 +215,26 @@ public class Changelog {
 		}
 	}
 
-	private static class ReleaseCandidate {
+	private class ReleaseCandidate {
 
 		private String name;
 		private String gameVersion;
-		private String date;
+		private Date date;
 
 		private final ArrayList<String> list = new ArrayList();
 
+		private ReleaseCandidate() {
+
+		}
+
+		private ReleaseCandidate(String ver, String gv, Date d) {
+			name = ver;
+			gameVersion = gv;
+			date = d;
+		}
+
 		private Release build() {
-			Release r = new Release(name.trim(), gameVersion != null ? gameVersion.trim() : null, date.trim());
+			Release r = new Release(name.trim(), gameVersion != null ? gameVersion.trim() : null, date);
 			for (String s : list) {
 				r.addRawChange(s);
 			}
@@ -130,11 +243,7 @@ public class Changelog {
 
 	}
 
-	private static class Release implements Comparable<Release> {
-
-		private final SimpleDateFormat dateFormat = new SimpleDateFormat("MMM d yyyy");
-		private final Date game10Release = this.parseDate("Aug 14 2020");
-		private final Date game11Release = this.parseDate("Nov 23 2020");
+	private class Release implements Comparable<Release> {
 
 		private final String name;
 		private final String gameVersion;
@@ -147,25 +256,31 @@ public class Changelog {
 
 		private final EnumMap<Category, ArrayList<String>> changes = new EnumMap(Category.class);
 
-		private Release(String n, String gv, String d) {
+		private Release(String n, String gv, Date d) {
 			name = n;
 			outputName = name;
-			date = d.trim();
 
-			try {
-				dateValue = this.parseDate(date);
-				calendar.setTime(dateValue);
-			}
-			catch (Exception e) {
-				throw new RuntimeException("Error parsing date: "+date, e);
+			calendar.setTime(d);
+			ReleaseCandidate rc = portalData.get(n);
+			if (rc != null && !this.isSameDay(rc)) {
+				Main.log(mod+" - Date mismatch in files vs mod portal: "+n+" ["+gv+"] @ "+dateFormat.format(d)+" but portal says it is "+dateFormat.format(rc.date)+"; using portal", true);
+				d = rc.date;
 			}
 
+			dateValue = d;
+			date = dateFormat.format(d);
 			gameVersion = Strings.isNullOrEmpty(gv) ? this.tryGetGameVersion() : gv;
+
+		}
+
+		private boolean isSameDay(ReleaseCandidate rc) {
+			throwawayCalendar.setTime(rc.date);
+			return throwawayCalendar.get(Calendar.YEAR) == calendar.get(Calendar.YEAR) && throwawayCalendar.get(Calendar.MONTH) == calendar.get(Calendar.MONTH) && throwawayCalendar.get(Calendar.DAY_OF_MONTH) == calendar.get(Calendar.DAY_OF_MONTH);
 		}
 
 		@Override
 		public String toString() {
-			return name+" @ "+date+" > "+changes.keySet().size();
+			return name+" ["+gameVersion+"] @ "+date+" > "+changes.keySet().size();
 		}
 
 		public void merge(Release r0) {
@@ -192,34 +307,11 @@ public class Changelog {
 				if (inner.length() == 2)
 					return "0."+inner;
 			}
-			try {
-				if (dateValue.compareTo(game11Release) > 0)
-					return "1.1";
-				if (dateValue.compareTo(game10Release) > 0)
-					return "1.0";
+			ReleaseCandidate release = portalData.get(name);
+			if (release != null) {
+				return release.gameVersion;
 			}
-			catch (Exception e) {
-				throw new RuntimeException("Could not parse date for heuristic GV: "+name+"/"+date, e);
-			}
-			int yr = calendar.get(Calendar.YEAR);
-			if (yr == 2018)
-				return "0.16";
-			if (yr == 2017)
-				return "0.15";
-			if (yr == 2016)
-				return "0.14";
-			if (yr == 2015)
-				return calendar.get(Calendar.MONTH) < 10 ? "0.11" : "0.12";
-			throw new RuntimeException("Indeterminate game version: "+name+"/"+date);
-		}
-
-		private Date parseDate(String s) {
-			try {
-				return dateFormat.parse(s);
-			}
-			catch (ParseException e) {
-				throw new RuntimeException(e);
-			}
+			return gameVersions.floorEntry(dateValue).getValue();
 		}
 
 		private void addRawChange(String s) {
@@ -228,13 +320,13 @@ public class Changelog {
 				s = s.substring(1).trim();
 			Category cat = Category.GENERIC;
 			String sl = s.toLowerCase(Locale.ENGLISH);
-			if (sl.startsWith("fix") || sl.startsWith("missing") || sl.contains("issue") || sl.contains("script error") || sl.contains("crash")) {
+			if (sl.startsWith("fix") || sl.startsWith(" missing ") || sl.contains(" issue") || sl.contains("script error") || sl.contains(" crash")) {
 				cat = Category.FIX;
 			}
-			else if (sl.startsWith("added") || sl.startsWith("new")) {
+			else if (sl.startsWith("added") || sl.startsWith("new") || sl.contains(" now have ")) {
 				cat = Category.FEATURE;
 			}
-			else if (sl.contains("balance") || sl.startsWith("decreased") || sl.startsWith("increased")) {
+			else if (sl.contains("balance") || sl.startsWith("decreased") || sl.startsWith("reduced") || sl.startsWith("increased")) {
 				cat = Category.BALANCE;
 			}
 			else if (sl.startsWith("remove")) {

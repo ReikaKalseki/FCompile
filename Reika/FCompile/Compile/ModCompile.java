@@ -44,7 +44,7 @@ public class ModCompile implements Runnable {
 
 	private final File modFolder;
 	public final InfoJsonParser info;
-	private final Settings settings;
+	final Settings settings;
 
 	private final boolean logPerFile;
 
@@ -191,6 +191,8 @@ public class ModCompile implements Runnable {
 			Main.log("Preparing changelog for '"+info.getName()+"'");
 			changelog = new Changelog(this, f, new File(workingDir, f.getName()));
 			changelog.generate();
+			File f2 = new File(modFolder, "changelog.txt");
+			FileUtils.copyFile(changelog.outputFile, f2);
 		}
 	}
 
@@ -375,6 +377,8 @@ public class ModCompile implements Runnable {
 		 */
 		if (f.isRootFolder() && n.equalsIgnoreCase("thumbnail.png"))
 			return false;
+		if (f.isRootFolder() && n.equalsIgnoreCase("changelog-input.txt"))
+			return true;
 		String ext = f.getExtension();
 		if (ignoredExtensions.contains(ext))
 			return true;
